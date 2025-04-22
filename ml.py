@@ -3,30 +3,50 @@ from flask_cors import CORS
 from ultralytics import YOLO
 from PIL import Image
 from collections import Counter
+import torch
 
 app = Flask(__name__)
 CORS(app)  # Allow frontend to access backend
 
-model = YOLO("best.pt")
+# Load model once during app startup
+try:
+    model = YOLO("best.pt")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    model = None
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    if model is None:
+        return jsonify({"error": "Model not loaded"}), 500
+
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
+
     file = request.files['image']
-    img = Image.open(file.stream)
-    results = model.predict(img)
-    boxes = results[0].boxes.data
-    class_names = [model.names[int(cls)] for cls in boxes[:, 5]]
+    try:
+        img = Image.open(file.stream).convert("RGB")
+        results = model.predict(img)
+        boxes = results[0].boxes
 
-    count = Counter(class_names)
+        if boxes is not None and boxes.data.numel() > 0:
+            class_ids = boxes.data[:, 5].int().tolist()
+            class_names = [model.names[i] for i in class_ids]
+        else:
+            class_names = []
 
-    # Convert to regular dict and rename keys to match frontend
-    response = {
-        "WBC": count.get("WBC", 0),
-        "RBC": count.get("RBC", 0),
-        "Platelets": count.get("platelets", 0)
-    }
+        count = Counter(class_names)
 
-    return jsonify(response)
+        # Return class-wise count
+        response = {
+            "WBC": count.get("WBC", 0),
+            "RBC": count.get("RBC", 0),
+            "Platelets": count.get("platelets", 0)
+        }
+        return jsonify(response)
+
+    except Exception as e:
+        return jsonify({"error": f"Failed to process image. {str(e)}"}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(host='0.0.0.0', port=5000)
